@@ -1,10 +1,12 @@
 import dearpygui.dearpygui as dpg
 import math
+import pandas as pd
+import traceback
 
 class TableView:
     def __init__(self):
         self.table_tag = "dbc_table"
-        self.view_mode = "vertical"  # or "horizontal"
+        self.view_mode = "vertical"  # "vertical" shows data in rows, "horizontal" shows data in columns
         self.page_size = 100  # Number of records per page
         self.current_page = 0
         self.total_pages = 0
@@ -52,74 +54,144 @@ class TableView:
             self.update_view(self.dataframe)
 
     def update_view(self, dataframe):
-        if dpg.does_item_exist(self.table_tag):
-            dpg.delete_item(self.table_tag)
+        try:
+            if dpg.does_item_exist(self.table_tag):
+                dpg.delete_item(self.table_tag)
 
-        self.dataframe = dataframe
-        if dataframe is None:
-            return
+            self.dataframe = dataframe
+            if dataframe is None or dataframe.empty:
+                with dpg.table(tag=self.table_tag, parent="content_window"):
+                    dpg.add_table_column(label="No Data")
+                    with dpg.table_row():
+                        dpg.add_text("No data to display")
+                return
 
-        # Calculate pagination
-        total_records = len(dataframe.index if self.view_mode == "vertical" else dataframe.columns)
-        self.total_pages = math.ceil(total_records / self.page_size)
-        self.current_page = min(self.current_page, self.total_pages - 1)
+            # Calculate pagination
+            total_records = len(dataframe.index if self.view_mode == "vertical" else dataframe.columns)
+            self.total_pages = math.ceil(total_records / self.page_size)
+            self.current_page = min(self.current_page, self.total_pages - 1)
 
-        # Update page indicator
-        if dpg.does_item_exist("page_indicator"):
-            dpg.set_value("page_indicator", f"Page: {self.current_page + 1} / {self.total_pages}")
+            # Update page indicator
+            if dpg.does_item_exist("page_indicator"):
+                dpg.set_value("page_indicator", f"Page: {self.current_page + 1} / {self.total_pages}")
 
-        # Calculate slice for current page
-        start_idx = self.current_page * self.page_size
-        end_idx = min(start_idx + self.page_size, total_records)
+            # Calculate slice for current page
+            start_idx = self.current_page * self.page_size
+            end_idx = min(start_idx + self.page_size, total_records)
 
-        # Slice the dataframe based on view mode
-        if self.view_mode == "horizontal":
-            df_to_display = dataframe.iloc[:, start_idx:end_idx].transpose()
-        else:
-            df_to_display = dataframe.iloc[start_idx:end_idx]
-
-        with dpg.table(tag=self.table_tag, parent="content_window",
-                      header_row=True, borders_innerH=True,
-                      borders_outerH=True, borders_innerV=True,
-                      borders_outerV=True, scrollY=True, scrollX=True,
-                      freeze_rows=1, height=-1,
-                      policy=dpg.mvTable_SizingFixedFit):
-
+            # Slice the dataframe based on view mode
             if self.view_mode == "horizontal":
-                self._create_transposed_view(df_to_display)
-            else:  # vertical view
-                self._create_normal_view(df_to_display)
+                # For horizontal view, we transpose the data to show columns as rows
+                df_to_display = dataframe.iloc[:, start_idx:end_idx].transpose()
+            else:
+                df_to_display = dataframe.iloc[start_idx:end_idx]
 
-    def _create_transposed_view(self, df):
-        # Add field names column with fixed width
-        dpg.add_table_column(label="Field Name", width_fixed=True, init_width_or_weight=200)
+            with dpg.table(tag=self.table_tag, parent="content_window",
+                          header_row=True, borders_innerH=True,
+                          borders_outerH=True, borders_innerV=True,
+                          borders_outerV=True, scrollY=True, scrollX=True,
+                          freeze_rows=1, height=-1,
+                          policy=dpg.mvTable_SizingFixedFit):
 
-        # Add data columns (paginated)
-        for col_idx in range(len(df.columns)):
-            dpg.add_table_column(label=f"{col_idx + (self.current_page * self.page_size)}",
-                               width_fixed=True,
-                               init_width_or_weight=120)
+                if self.view_mode == "horizontal":
+                    self._create_horizontal_view(df_to_display)
+                else:  # vertical view
+                    self._create_vertical_view(df_to_display)
 
-        # Add rows in chunks
-        chunk_size = 50  # Process rows in smaller chunks
-        for chunk_start in range(0, len(df.index), chunk_size):
-            chunk_end = min(chunk_start + chunk_size, len(df.index))
-            for field_name, row in df.iloc[chunk_start:chunk_end].iterrows():
+        except Exception as e:
+            print(f"Error updating view: {str(e)}")
+            traceback.print_exc()
+            # Create error table
+            with dpg.table(tag=self.table_tag, parent="content_window"):
+                dpg.add_table_column(label="Error")
                 with dpg.table_row():
-                    dpg.add_text(str(field_name))
-                    for value in row:
-                        dpg.add_text(str(value))
+                    dpg.add_text(f"Error updating view: {str(e)}")
 
-    def _create_normal_view(self, df):
-        # Add columns based on field names
-        for col in df.columns:
-            dpg.add_table_column(label=str(col), width_fixed=True, init_width_or_weight=120)
+    def _create_horizontal_view(self, df):
+        """
+        Creates a horizontal view where columns become rows.
+        Each row represents a field name, and columns show the values.
+        """
+        try:
+            if df.empty:
+                dpg.add_table_column(label="No Data")
+                with dpg.table_row():
+                    dpg.add_text("No data to display")
+                return
 
-        # Add rows
-        for idx, row in df.iterrows():
+            # Add field names column with fixed width
+            dpg.add_table_column(label="Field Name", width_fixed=True, init_width_or_weight=200)
+
+            # Add data columns (paginated)
+            for col_idx in range(len(df.columns)):
+                try:
+                    col_label = f"{col_idx + (self.current_page * self.page_size)}"
+                    dpg.add_table_column(label=col_label,
+                                       width_fixed=True,
+                                       init_width_or_weight=120)
+                except Exception as e:
+                    print(f"Error adding column {col_idx}: {str(e)}")
+                    continue
+
+            # Add rows in chunks
+            chunk_size = 50  # Process rows in smaller chunks
+            for chunk_start in range(0, len(df.index), chunk_size):
+                try:
+                    chunk_end = min(chunk_start + chunk_size, len(df.index))
+                    for field_name, row in df.iloc[chunk_start:chunk_end].iterrows():
+                        with dpg.table_row():
+                            dpg.add_text(str(field_name))
+                            for value in row:
+                                dpg.add_text(str(value) if pd.notna(value) else "")
+                except Exception as e:
+                    print(f"Error processing chunk {chunk_start}-{chunk_end}: {str(e)}")
+                    continue
+
+        except Exception as e:
+            print(f"Error in horizontal view: {str(e)}")
+            traceback.print_exc()
+            # Add error message to table
+            dpg.add_table_column(label="Error")
             with dpg.table_row():
-                for value in row:
-                    dpg.add_text(str(value))
+                dpg.add_text(f"Error displaying data: {str(e)}")
+
+    def _create_vertical_view(self, df):
+        """
+        Creates a vertical view where data is shown in traditional table format.
+        Each row represents a record, and columns show the fields.
+        """
+        try:
+            if df.empty:
+                dpg.add_table_column(label="No Data")
+                with dpg.table_row():
+                    dpg.add_text("No data to display")
+                return
+
+            # Add columns based on field names
+            for col in df.columns:
+                try:
+                    dpg.add_table_column(label=str(col), width_fixed=True, init_width_or_weight=120)
+                except Exception as e:
+                    print(f"Error adding column {col}: {str(e)}")
+                    continue
+
+            # Add rows
+            for idx, row in df.iterrows():
+                try:
+                    with dpg.table_row():
+                        for value in row:
+                            dpg.add_text(str(value) if pd.notna(value) else "")
+                except Exception as e:
+                    print(f"Error processing row {idx}: {str(e)}")
+                    continue
+
+        except Exception as e:
+            print(f"Error in vertical view: {str(e)}")
+            traceback.print_exc()
+            # Add error message to table
+            dpg.add_table_column(label="Error")
+            with dpg.table_row():
+                dpg.add_text(f"Error displaying data: {str(e)}")
 
     def show_stats(self):
         if self.dataframe is None:
