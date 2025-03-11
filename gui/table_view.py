@@ -10,6 +10,10 @@ class TableView:
         self.page_size = 100  # Number of records per page
         self.current_page = 0
         self.total_pages = 0
+        self.current_data = None
+        self.current_headers = []
+        self.file_manager = None  # Will be set after creation
+        self.dataframe = None  # Add this line to store the DataFrame
 
     def setup(self):
         with dpg.child_window(width=-1, height=-1, tag="content_window"):
@@ -58,7 +62,7 @@ class TableView:
             if dpg.does_item_exist(self.table_tag):
                 dpg.delete_item(self.table_tag)
 
-            self.dataframe = dataframe
+            self.dataframe = dataframe  # Store the DataFrame
             if dataframe is None or dataframe.empty:
                 with dpg.table(tag=self.table_tag, parent="content_window"):
                     dpg.add_table_column(label="No Data")
@@ -108,10 +112,6 @@ class TableView:
                     dpg.add_text(f"Error updating view: {str(e)}")
 
     def _create_horizontal_view(self, df):
-        """
-        Creates a horizontal view where columns become rows.
-        Each row represents a field name, and columns show the values.
-        """
         try:
             if df.empty:
                 dpg.add_table_column(label="No Data")
@@ -138,11 +138,18 @@ class TableView:
             for chunk_start in range(0, len(df.index), chunk_size):
                 try:
                     chunk_end = min(chunk_start + chunk_size, len(df.index))
-                    for field_name, row in df.iloc[chunk_start:chunk_end].iterrows():
+                    for row_idx, (field_name, row) in enumerate(df.iloc[chunk_start:chunk_end].iterrows(), start=chunk_start):
                         with dpg.table_row():
-                            dpg.add_text(str(field_name))
-                            for value in row:
-                                dpg.add_text(str(value) if pd.notna(value) else "")
+                            dpg.add_text(str(field_name))  # Field name is not editable
+                            for col_idx, value in enumerate(row):
+                                cell_tag = f"cell_{row_idx}_{col_idx}"
+                                dpg.add_input_text(
+                                    default_value=str(value) if pd.notna(value) else "",
+                                    tag=cell_tag,
+                                    width=-1,
+                                    on_enter=True,
+                                    callback=lambda s, a, u: self._on_cell_edit(s, a, u)
+                                )
                 except Exception as e:
                     print(f"Error processing chunk {chunk_start}-{chunk_end}: {str(e)}")
                     continue
@@ -156,10 +163,6 @@ class TableView:
                 dpg.add_text(f"Error displaying data: {str(e)}")
 
     def _create_vertical_view(self, df):
-        """
-        Creates a vertical view where data is shown in traditional table format.
-        Each row represents a record, and columns show the fields.
-        """
         try:
             if df.empty:
                 dpg.add_table_column(label="No Data")
@@ -175,12 +178,19 @@ class TableView:
                     print(f"Error adding column {col}: {str(e)}")
                     continue
 
-            # Add rows
+            # Add rows with editable cells
             for idx, row in df.iterrows():
                 try:
                     with dpg.table_row():
-                        for value in row:
-                            dpg.add_text(str(value) if pd.notna(value) else "")
+                        for col_idx, value in enumerate(row):
+                            cell_tag = f"cell_{idx}_{col_idx}"
+                            dpg.add_input_text(
+                                default_value=str(value) if pd.notna(value) else "",
+                                tag=cell_tag,
+                                width=-1,
+                                on_enter=True,
+                                callback=lambda s, a, u: self._on_cell_edit(s, a, u)
+                            )
                 except Exception as e:
                     print(f"Error processing row {idx}: {str(e)}")
                     continue
@@ -192,6 +202,48 @@ class TableView:
             dpg.add_table_column(label="Error")
             with dpg.table_row():
                 dpg.add_text(f"Error displaying data: {str(e)}")
+
+    def _on_cell_edit(self, sender, app_data, user_data):
+        """Handle cell value changes"""
+        try:
+            # Extract row and column indices from cell tag
+            _, row_idx, col_idx = sender.split("_")
+            row_idx = int(row_idx) + (self.current_page * self.page_size)  # Adjust for pagination
+            col_idx = int(col_idx)
+
+            # Update the dataframe
+            if self.dataframe is not None:
+                # Retrieve the corresponding column type
+                field_type = self.file_manager.dbc_handler.dbc_file.column_types[col_idx]
+
+                # Convert value based on column type
+                try:
+                    current_value = self.dataframe.iloc[row_idx, col_idx]
+                    if field_type == "numeric":
+                        if pd.api.types.is_float_dtype(self.dataframe.dtypes[col_idx]):
+                            new_value = float(app_data)
+                        else:
+                            new_value = int(app_data)
+                    elif field_type == "string":
+                        new_value = app_data
+                    else:
+                        new_value = app_data
+
+                    # Update the value
+                    self.dataframe.iloc[row_idx, col_idx] = new_value
+                    print(f"Updated cell [{row_idx}][{col_idx}] from {current_value} to {new_value}")
+
+                    # Mark file as having unsaved changes
+                    if self.file_manager:
+                        self.file_manager.mark_unsaved_changes()
+
+                except ValueError as e:
+                    print(f"Invalid value: {str(e)}")
+                    # Revert to original value
+                    dpg.set_value(sender, str(current_value))
+
+        except Exception as e:
+            print(f"Error in cell edit: {str(e)}")
 
     def show_stats(self):
         if self.dataframe is None:
@@ -211,3 +263,10 @@ class TableView:
                     dpg.add_text(f"  - {col}")
             else:
                 dpg.add_text("No statistics available")
+
+    def set_file_manager(self, file_manager):
+        self.file_manager = file_manager
+
+    def get_current_data(self):
+        """Return the current DataFrame"""
+        return self.dataframe

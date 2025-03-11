@@ -172,4 +172,3 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-gui/__pycache__/table_view.cpython-312.pyc

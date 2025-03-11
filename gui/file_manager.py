@@ -3,10 +3,13 @@ from pathlib import Path
 import os
 from definitions_handler import DefinitionsHandler  # Import DefinitionsHandler
 from dbc_handler import DBCHandler  # Import DBCHandler
+import json
+from typing import List, Dict
 
 class FileManager:
     def __init__(self, table_view):
         self.current_file = None
+        self.successfully_loaded_file = None  # Add this to track successfully loaded files
         self.dbc_files = []
         self.search_active = False
         self.search_filter = ""
@@ -15,6 +18,7 @@ class FileManager:
         self.dbc_handler = DBCHandler()  # Initialize DBCHandler
         self.table_view = table_view  # Reference to TableView
         self.current_definition_file = None  # Track current definition file
+        self.has_unsaved_changes = False
 
     def setup(self):
         self._setup_file_dialogs()
@@ -89,10 +93,54 @@ class FileManager:
         """Show the folder dialog for opening directories"""
         dpg.show_item("folder_dialog_id")
 
-    def save_file(self):
-        """Save current DBC file"""
-        # TODO: Implement save functionality
-        pass
+    def save_file(self) -> bool:
+        """Coordinate saving the current file"""
+        if not self.successfully_loaded_file:
+            print("No file is currently loaded for saving")
+            return False
+
+        try:
+            df = self.table_view.get_current_data()
+            if df is None:
+                print("No data to save - TableView returned None")
+                return False
+
+            # Create backup before saving
+            backup_path = f"{self.successfully_loaded_file}.bak"
+            try:
+                import shutil
+                shutil.copy2(self.successfully_loaded_file, backup_path)
+                print(f"Created backup at {backup_path}")
+            except Exception as e:
+                print(f"Warning: Could not create backup: {str(e)}")
+
+            print(f"Attempting to save file: {self.successfully_loaded_file}")
+            success = self.dbc_handler.save_dbc(self.successfully_loaded_file, df)
+
+            if success:
+                self.has_unsaved_changes = False
+                print(f"Successfully saved to {self.successfully_loaded_file}")
+                # Refresh table view
+                self.table_view.update_view(df)
+            else:
+                # Restore from backup if save failed
+                if os.path.exists(backup_path):
+                    shutil.copy2(backup_path, self.successfully_loaded_file)
+                    print("Restored from backup due to save failure")
+                print("Failed to save file - DBC Handler returned False")
+
+            # Remove backup if save was successful
+            if success and os.path.exists(backup_path):
+                os.remove(backup_path)
+
+            return success
+
+        except Exception as e:
+            print(f"Error saving file: {str(e)}")
+            return False
+
+    def mark_unsaved_changes(self):
+        self.has_unsaved_changes = True
 
     def file_dialog_callback(self, sender, app_data):
         """Handle file selection from dialog"""
@@ -106,11 +154,15 @@ class FileManager:
                 print(f"File does not exist: {selected_path}")
                 return
 
-            self.current_file = selected_path
-            if self.current_file.lower().endswith('.dbc'):
-                self.dbc_files = [self.current_file]
+            print(f"Selected file: {selected_path}")  # Debug print
+
+            if selected_path.lower().endswith('.dbc'):
+                self.dbc_files = [selected_path]
                 self.update_file_list()
-                self.load_file(self.current_file)  # Load the selected file
+                # Only set current_file if load is successful
+                if self.load_file(selected_path):
+                    self.current_file = selected_path
+                    print(f"Successfully set current file to: {self.current_file}")
             else:
                 print("Selected file is not a DBC file.")
         except Exception as e:
@@ -191,7 +243,7 @@ class FileManager:
 
     def load_file(self, filepath):
         """Load the selected DBC file"""
-        print(f"Loading DBC file: {filepath}")  # Debug print
+        print(f"Loading DBC file: {filepath}")
 
         # Ensure current definition is loaded
         if self.current_definition_file:
@@ -200,11 +252,19 @@ class FileManager:
         else:
             print("Warning: No definition file selected")
 
-        if self.dbc_handler.load_dbc(filepath):
-            print(f"Successfully loaded DBC file: {filepath}")
-            self.table_view.update_view(self.dbc_handler.dataframe)
-        else:
-            print(f"Failed to load DBC file: {filepath}")
+        try:
+            if self.dbc_handler.load_dbc(filepath):
+                print(f"Successfully loaded DBC file: {filepath}")
+                self.table_view.update_view(self.dbc_handler.dataframe)
+                self.successfully_loaded_file = filepath
+                self.has_unsaved_changes = False
+                return True
+            else:
+                print(f"Failed to load DBC file: {filepath}")
+                return False
+        except Exception as e:
+            print(f"Error loading file: {e}")
+            return False
 
     def get_string(self, offset: int) -> str:
         """Get string from string block at given offset"""

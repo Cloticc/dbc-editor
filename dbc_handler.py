@@ -44,7 +44,7 @@ class DBCHandler:
                 return False
 
             total_records = len(self.dbc_file.records)
-            if total_records == 0:
+            if (total_records == 0):
                 return False
 
             print(f"Loading {total_records} records...")
@@ -197,14 +197,54 @@ class DBCHandler:
                 return self.dataframe
         return pd.DataFrame()
 
-    def save_dbc(self, filepath):
-        """
-        Save changes to a DBC file
-        Args:
-            filepath (str): Path where to save the DBC file
-        """
-        # TODO: Implement DBC file saving logic
-        pass
+    def save_dbc(self, filepath: str, dataframe: pd.DataFrame) -> bool:
+        """Save DataFrame back to DBC format"""
+        try:
+            if dataframe is None or dataframe.empty:
+                print("No data to save")
+                return False
+
+            # Update DBC file records from DataFrame
+            self.dbc_file.records = []
+            string_block = bytearray()
+            string_offsets = {}
+
+            # Process each row in the DataFrame
+            for idx, row in dataframe.iterrows():
+                record = {}
+                for col_idx, value in enumerate(row):
+                    if pd.isna(value):
+                        record[col_idx] = 0
+                    elif isinstance(value, str):
+                        # Handle string values
+                        if value not in string_offsets:
+                            string_offsets[value] = len(string_block)
+                            string_block.extend(value.encode('utf-8') + b'\0')
+                        record[col_idx] = string_offsets[value]
+                    elif isinstance(value, (float, np.float64)):
+                        # Keep float if it's not a whole number
+                        record[col_idx] = int(value) if value.is_integer() else value
+                    else:
+                        # Convert any other numeric types to int
+                        record[col_idx] = int(value)
+
+                self.dbc_file.records.append(record)
+
+            # Update string block
+            self.dbc_file.string_block = bytes(string_block)
+            self.dbc_file.string_offsets = string_offsets  # Update string_offsets
+
+            # Save the file
+            success = self.dbc_file.save_file(filepath)
+            if success:
+                print(f"Successfully saved {len(self.dbc_file.records)} records")
+            return success
+
+        except Exception as e:
+            print(f"Error saving DBC: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def get_structure(self):
         """
@@ -229,8 +269,8 @@ class DBCHandler:
         self._cached_definitions[cache_key] = field_names
         return field_names
 
-    def apply_field_names(self, field_names=None):
-        """Apply field names to the DataFrame columns"""
+    def apply_field_names(self, field_names=None, field_types=None):
+        """Apply field names and types to the DataFrame columns"""
         if self.dataframe is None or self.dataframe.empty or not field_names:
             print("Cannot apply field names: DataFrame empty or no field names provided")
             return False
@@ -238,20 +278,25 @@ class DBCHandler:
         try:
             current_columns = len(self.dataframe.columns)
             field_list = []
+            type_list = []
 
             # Process field definitions
             for field in field_names:
-                if isinstance(field, dict) and 'name' in field:
+                if isinstance(field, dict) and 'name' in field and 'type' in field:
                     base_name = field['name']
+                    field_type = field['type']
                     array_size = field.get('array_size', 1)
 
                     if array_size > 1:
                         # Add indexed fields for arrays
                         field_list.extend([f"{base_name}_{i}" for i in range(array_size)])
+                        type_list.extend([field_type] * array_size)
                     else:
                         field_list.append(base_name)
+                        type_list.append(field_type)
                 elif isinstance(field, str):
                     field_list.append(field)
+                    type_list.append('int')  # Default type
 
             # Verify field count matches
             print(f"Found {len(field_list)} fields for {current_columns} columns")
@@ -260,12 +305,15 @@ class DBCHandler:
             if len(field_list) < current_columns:
                 print(f"Adding {current_columns - len(field_list)} generic field names")
                 field_list.extend([f"Field_{i}" for i in range(len(field_list), current_columns)])
+                type_list.extend(['int'] * (current_columns - len(type_list)))
             elif len(field_list) > current_columns:
                 print(f"Truncating field list from {len(field_list)} to {current_columns}")
                 field_list = field_list[:current_columns]
+                type_list = type_list[:current_columns]
 
             print(f"Applying field names: {field_list[:5]}...")
             self.dataframe.columns = field_list
+            self.dbc_file.set_column_types(type_list)  # Set field types
             return True
 
         except Exception as e:
@@ -329,12 +377,27 @@ class DBCHandler:
         except Exception as e:
             print(f"Cleanup error: {e}")
 
-            gc.collect()
-        except Exception as e:
-            print(f"Cleanup error: {e}")
+    def load_file(self, filepath):
+        """Load the selected DBC file"""
+        print(f"Loading DBC file: {filepath}")
 
-            if hasattr(self, 'dataframe'):
-                del self.dataframe
-            gc.collect()
+        # Ensure current definition is loaded
+        if self.current_definition_file:
+            print(f"Using definition file: {self.current_definition_file}")
+            self.load_definition_file(self.current_definition_file)
+        else:
+            print("Warning: No definition file selected")
+
+        try:
+            if self.dbc_handler.load_dbc(filepath):
+                print(f"Successfully loaded DBC file: {filepath}")
+                self.table_view.update_view(self.dbc_handler.dataframe)
+                self.successfully_loaded_file = filepath
+                self.has_unsaved_changes = False
+                return True
+            else:
+                print(f"Failed to load DBC file: {filepath}")
+                return False
         except Exception as e:
-            print(f"Cleanup error: {e}")
+            print(f"Error loading file: {e}")
+            return False
